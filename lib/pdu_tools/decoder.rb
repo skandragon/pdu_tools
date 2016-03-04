@@ -34,7 +34,7 @@ module PDUTools
       @user_data_length = take(2, :integer)
       parse_user_data @user_data_length
 
-      MessagePart.new @address, @message, @sc_timestamp, @validity_period, @user_data_header
+      MessagePart.new @address, @message, @message_encoding, @sc_timestamp, @validity_period, @user_data_header
     end
 
     def inspect2
@@ -172,9 +172,10 @@ module PDUTools
         udh = take(@udh_length)
         @user_data_header = parse_user_data_header udh
       end
-      case @data_coding_scheme[:alphabet]
+      @message_encoding = @data_coding_scheme[:alphabet]
+      case @message_encoding
       when :a7bit
-        @message = gsm0338_to_utf8 decode7bit(@pdu_hex, @offset_7bit)
+        @message = gsm0338_to_utf8 decode7bit(@pdu_hex, data_length, @offset_7bit)
       when :a8bit
         @message = gsm0338_to_utf8 decode8bit(@pdu_hex, data_length)
       when :a16bit
@@ -183,25 +184,36 @@ module PDUTools
     end
 
     def parse_user_data_header header
-      iei = take 2, :string, header
-      header_length = take 2, :integer, header
-      case iei
-      when "00"
-        reference = take 2, :integer, header
-        @offset_7bit = 0
-      when "08"
-        reference = take 4, :integer, header
-        @offset_7bit = 1
-      else
-        raise DecodeError, "unsupported Information Element Identifier in User Data Header: #{iei}"
+      ret = {}
+      while header.length > 0
+        iei_type = take 2, :string, header
+        iei_length = take 2, :integer, header
+        iei_data = take iei_length * 2, :string, header
+        case iei_type
+        when "00"
+          reference = take 2, :integer, iei_data
+          parts = take 2, :integer, iei_data
+          part_number = take 2, :integer, iei_data
+          ret[:multipart] = { reference: reference, parts: parts, part_number: part_number }
+          @offset_7bit = 0
+        when '05'
+          dest_port = take 4, :integer, iei_data
+          source_port = take 4, :integer, iei_data
+          ret[:addressing] = { source: source_port, destination: dest_port }
+        when "08"
+          reference = take 4, :integer, iei_data
+          parts = take 2, :integer, iei_data
+          part_number = take 2, :integer, iei_data
+          ret[:multipart] = { reference: reference, parts: parts, part_number: part_number }
+          @offset_7bit += 1
+        else
+          raise DecodeError, "unsupported Information Element Identifier in User Data Header: #{iei}"
+        end
+        if iei_data.length != 0
+          raise DecodeError, "Failure to decode: iei length is not correct for type"
+        end
       end
-      parts = take 2, :integer, header
-      part_number = take 2, :integer, header
-      {
-          reference: reference,
-          parts: parts,
-          part_number: part_number
-      }
+      ret
     end
 
     DecodeError = Class.new(StandardError)
